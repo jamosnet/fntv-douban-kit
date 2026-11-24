@@ -1,0 +1,42 @@
+# 飞牛影视（trimmedia）+ OpenList 网盘挂载 完整部署
+#
+# 用法：
+#   1. 把下面所有 /volume1/docker 改成你 NAS 上的实际路径
+#   2. 确认端口 2290（飞牛影视）和 15827（OpenList）没被占用
+#   3. 在同目录执行： docker compose up -d
+#
+# 提示：群晖需要先在「套件中心」安装 Container Manager
+#       不支持核显的机器，把 devices 两行删掉（改成纯软件解码）
+
+services:
+  # ---------- 飞牛影视（独立版 / trim 刮削） ----------
+  trimmedia:
+    image: ghcr.io/satxm/trimmedia:latest
+    container_name: trimmedia
+    restart: unless-stopped
+    environment:
+      - PUID=1000 # 改成 `id -u` 的输出
+      - GUID=1000 # 改成 `id -g` 的输出
+    ports:
+      - "2290:8005" # 左边是浏览器访问端口，可自定义
+    devices:
+      - /dev/dri:/dev/dri
+    volumes:
+      - /volume1/docker/trimmedia/media:/vol1/1000/media # 媒体目录（strm 落在这里），必须
+      # 可选：想把播放记录/刮削结果持久化就打开下面这行（不打开则容器重建后媒体库要重扫一遍）
+      # - /volume1/docker/trimmedia/data:/vol1/@appdata/trim.media
+      - /dev/dri/by-path:/dev/dri/by-path
+
+  # ---------- OpenList（网盘转 WebDAV + 生成 strm） ----------
+  openlist:
+    image: openlistteam/openlist:v4.2.10-aio
+    container_name: openlist
+    restart: unless-stopped
+    user: "1001:1001" # 必须与 strm 目录属主一致，否则无法写入
+    environment:
+      - UMASK=022
+    ports:
+      - "15827:5244" # 左边是浏览器访问端口，可自定义
+    volumes:
+      - /volume1/docker/openlist:/opt/openlist/data
+      - /volume1/docker/trimmedia/media/strm:/strm # 与上面的 media 目录保持同一父目录
