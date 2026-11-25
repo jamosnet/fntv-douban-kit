@@ -585,7 +585,7 @@ https://raw.githubusercontent.com/jamosnet/fntv-douban-kit/main/fntv-douban-help
 > raw 地址国内偶尔打不开，换镜像：
 > `https://cdn.jsdelivr.net/gh/jamosnet/fntv-douban-kit@main/fntv-douban-helper.user.js`
 
-> 之前装过测试版（`trim_douban_helper.user.js`）的，先去篡改猴管理面板把旧的那条**删掉**再装——命名空间变了，篡改猴会当成两个脚本，页面上会冒出两个面板。
+> 之前装过内测版的注意：那时文件叫 `trim_douban_helper.user.js`、版本是 1.3.x，现在仓库里已经没有这个文件了。先去篡改猴管理面板把旧的那条**删掉**再装——命名空间变了，篡改猴会当成两个脚本，页面上会冒出两个面板。
 
 装完点篡改猴图标，列表里能看到「飞牛影视 豆瓣匹配助手」这一条，状态是**已启用**就成。
 
@@ -695,6 +695,35 @@ https://raw.githubusercontent.com/jamosnet/fntv-douban-kit/main/fntv-douban-help
 - 媒体文件夹选错成宿主路径 → 必须选容器内 `/vol1/1000/media/...`
 - 容器 PUID/GUID 和 media 目录属主不一致 → `chown -R 1000:1000 media`
 - 刮削失败 → 多半是 TMDB 网络问题，用第 6 步的豆瓣插件
+
+**Q：重新生成 strm / 刷新索引，会把豆瓣匹配和集号纠正弄丢吗**
+
+**不会**，只要网盘上的目录和文件名没变。
+
+三件事保证了这一点：
+
+| 事实 | 为什么安全 |
+|---|---|
+| 刮削结果存在数据库，不在 strm 里 | 你的 strm 目录里 80 个文件总共才 20 KB，清一色 `.strm`，没有 nfo / 海报。豆瓣匹配、集号都写在 `/vol1/@appdata/trim.media/database/trimmedia.db`，改 strm 碰不到它 |
+| 内容没变就根本不写 | OpenList 重新生成时会先算 SHA256 比对，**内容一模一样直接跳过**，连修改时间都不动，飞牛完全感知不到 |
+| 内容变了也是原地覆盖 | 换了签名或域名时，OpenList 用截断重写（不是删除重建），路径、文件名都没变，飞牛按路径匹配到的还是同一个条目 |
+| 「同步」模式只删网盘已删的 | 本地保存模式选「同步」时，只会清理云端已经不存在的文件，不会无差别重建 |
+
+**会真的失效的只有三种操作**（都跟"路径变了"有关）：
+
+1. 在网盘上给文件夹改名 / 移动位置 → 路径变了，飞牛认为旧文件消失，旧条目连同豆瓣匹配一起没
+2. 手动把 `media/strm/115` 整个删掉再全量生成 → 所有文件瞬间消失
+3. 删掉 OpenList 的 115 存储重建时，本地路径填成了另一个目录
+
+另外，**网盘上增删了集会怎样**：已有集的集号不动，新多出来的文件会掉进「特别篇」，再跑一次 6.5 的修复就行。
+
+保险起见，重新生成前备份一次数据库，出事直接拷回来：
+
+```bash
+docker exec trimmedia sh -c 'cp /vol1/@appdata/trim.media/database/trimmedia.db /vol1/@appdata/trim.media/database/trimmedia.db.bak'
+```
+
+想实测验证也很简单：打开剧集页面，看地址栏 `/v/剧名/` 后面那串 **32 位十六进制**，重新生成前后对比——**ID 一样就是同一个条目，豆瓣匹配和集号都还在**。
 
 **Q：密码忘了 / 想重置 admin 密码**
 
