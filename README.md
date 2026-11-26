@@ -873,6 +873,8 @@ docker run -d --name trimmedia-ext --restart unless-stopped \
   ```
 - 面板支持**标题栏拖动**移动位置、**右下角◢拖拽**调宽度，位置和宽度都会记住
 
+![手动改值 tab：条目详情页自动带出 标题 / sort_title / 发行时间，一键写库](screenshots/16-manual-edit.jpg)
+
 **sort_title 的正确写法（实测结论，勿踩坑）**：官方按 `sort_title` 列做 SQLite 默认字节序排序，所以：
 
 - ✅ 正确格式 = **相同前缀 + 补零两位数字**：`乡村爱情01`…`乡村爱情18`、`权力的游戏01`…`权力的游戏08`——字典序即自然序
@@ -937,7 +939,7 @@ docker rm -f trimmedia
 ├── ext/                           trimmedia-ext 数据库扩展服务（见第 8 章）
 │   ├── server.py                  服务本体：Python 3.11 纯标准库单文件
 │   └── test_local.py              本地端到端测试（21 项断言）
-└── screenshots/                   17 张截图
+└── screenshots/                   18 张截图
 ```
 
 ## 致谢 / 参考
