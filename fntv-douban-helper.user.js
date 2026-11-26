@@ -2,7 +2,7 @@
 // @name         飞牛影视 豆瓣匹配助手
 // @name:en      Feiniu Douban Helper
 // @namespace    https://github.com/jamosnet/fntv-douban-kit
-// @version      1.4.0
+// @version      1.3.13-20261127
 // @description  给飞牛影视网页版添加"豆瓣匹配"和"集号修复"入口。豆瓣匹配：官方手动匹配无豆瓣来源，本脚本支持；本地 NFO 库自动降级为直接写入。集号修复：文件名裸数字/无集号标记导致全部归入"特别篇"（0季0集）时，按文件名批量重编季/集号。
 // @description:en Add Douban metadata matching and batch episode renumbering to the Feiniu (fnOS / trimmedia) web UI.
 // @author       jamosnet
@@ -13,9 +13,12 @@
 // @license      MIT
 // @match        *://*/v/*
 // @grant        GM_xmlhttpRequest
+// @grant        GM_setValue
+// @grant        GM_getValue
 // @grant        unsafeWindow
 // @connect      m.douban.com
 // @connect      doubanio.com
+// @connect      *
 // @run-at       document-start
 // ==/UserScript==
 
@@ -30,7 +33,16 @@
 * [v1.3.1] - 2026-11-25 新增【修复集号（批量）】：按文件名解析集号批量重编季/集，修复“全部 0 季 0 集显示为特别篇”；修复 /v/tv/season/ 两级路径的 guid 识别。
 * [v1.3.2] - 2026-11-25 集号解析修复：兜底由“取第一个数字”改为“取最后一个独立数字块”，并跳过分辨率(1080/2160…)、年份、S16/X2 之类标记。此前「乡村爱情S16 01 4K.strm」被解析成第 16 集，41 个文件全部撞号弹出重复提示。另新增：提交前弹解析预览确认；撞号时提示改用【按文件名顺序编号】；新增该模式复选框。
 * [v1.3.3] - 2026-11-25 🚫 已废弃回退：曾把撞号语义改成「同集多版本照常提交」，经确认不适用（用户库里确有重复文件但希望按序号 1–41 顺排，重复的顺移占下一集），现恢复 1.3.2 行为，勿再使用该改动。
-* [v1.4.0] - 2026-11-25 首个公开发布版：功能与 1.3.2 完全一致（1.3.3 已废弃）。补齐 @updateURL / @downloadURL 等自动更新元数据，@license MIT；版本号改用纯 semver（此前 1.3.2-20261125 属预发布版，比正式的 1.3.2 还小，会导致无法正常升级）。
+* [v1.3.4] - 2026-11-25 首个公开发布版：功能与 1.3.2 完全一致（1.3.3 已废弃）。补齐 @updateURL / @downloadURL 等自动更新元数据，@license MIT。（曾短暂改用纯 semver 1.4.0，按规范恢复「patch-日期」格式）
+* [v1.3.5] - 2026-11-27 新增【标题排序修复】区块（曾为 1.5.0）：配合 trimmedia-ext 旁路容器（README 第 8 章）修复官方 sort_title 字典序 bug（1,10,11,2 乱序）。预览→确认→执行两段式；地址自动按「当前端口+1」寻址（2290→2291），也可手动指定（域名走 Caddy2 路径反代）；鉴权直接转发页面登录 token，ext 回官方验证 is_admin，无需填任何新 token。
+* [v1.3.6] - 2026-11-27 排序修复去掉必填前缀（曾为 1.6.0）：默认一键扫描全库，「剧名+数字」系列自动分组（单条不碰），前缀输入降级为可选过滤；面板 tab 化（豆瓣匹配 / 排序修复 分页，解决面板拥挤）；新增标题栏拖动移动 + 右下角调宽，位置/宽度均记忆。
+* [v1.3.7] - 2026-11-27 排序扫描范围自动限定当前媒体库（用户反馈：全库扫描出 4199 处，把单集标题全当成系列了）：自动从当前页面 URL 取库 guid 传给 ext（item_ancestor 祖先链过滤）；同时服务端排除季/集级条目（season/episode 编号非空的条目一律不碰），只在剧/电影级条目里找系列。预览显示扫描范围。
+* [v1.3.8] - 2026-11-27 修复范围过滤在真实库圈空（用户反馈：合集页扫描报"没有需要排序的序列"，实际 1,10,11,2 明显乱序）：真实库 item_ancestor 不含库 guid，范围过滤落空成 0 条。服务端改三通道范围（guid 自身 ∪ item_ancestor 祖先链 ∪ parent_guid 递归子树，CTE 种子不再要求库节点在 item 表内），三通道全落空时自动回退全库并显式标记 fallback；响应新增 scanned（实际扫描条目数）供面板展示。面板新增「范围跟随当前页面」勾选框（取消=扫全库），结果区显示扫描条目数与回退警告。
+* [v1.3.9] - 2026-11-27 新增「手动改值」tab（用户洞察：sortfix 正则只救得了「剧名+数字」规整命名，救不了「权力的游戏 第X季」这类中文序数——通用解是手动改「标题 / 发行时间」两个值，让任意排序模式自然正确）。在条目详情页自动带出当前标题/发行时间/sort_title，改标题可勾选同步 sort_title（官方「标题」排序读该字段），改发行时间同步写 air_date+first_air_date。走 patch 模块 preview→apply 两段式+自动备份。ext 升级 1.2.0：patch 白名单补 sort_title/air_date/first_air_date/release_date，新增只读 /api/item/preview 按 guid 取可编辑字段。sortfix 保留（规整命名批量补零仍是它最快）。
+* [v1.3.10] - 2026-11-27 按用户决定作废「排序修复」tab 并整体移除：场景有限，新用户容易困惑，开发者自己也不再使用（批量能力仅保留 ext /api/sortfix 供命令行）。手动改值 tab 改造：① sort_title 从隐藏同步项升级为独立可见可编辑字段（官方「标题」排序读的就是它，用户实测改标题后排序不变就是因为这字段要单独改）；② 去掉二次确认——一键直写，按钮红色醒目+面板常驻警示条（改错可改回+自动备份可恢复+改完若界面没变重启 trimmedia 容器刷新官方内存缓存）。扩展服务地址输入框移入本 tab。
+* [v1.3.11] - 2026-11-27 文案正式化（用户反馈）：①「排序值」叫法有歧义，字段名统一直接用 sort_title，说明行加补零规则（同前缀+补零两位数字，1/2/10 与中文数字都会乱序）；② 警示条改为正式措辞（直接写库请核对后保存 / 保存前自动备份可经 /api/backups/restore 恢复 / 未显示新值请重启 trimmedia 容器）。配套 ext 1.2.1 删除 sortfix 模块（面板已作废，残留代码徒增维护负担）。
+* [v1.3.12] - 2026-11-27 寻址约定延伸到域名模式（用户反馈：配了 Caddy2 后端口+1 失效还得手动填地址，约定不该断）：端口+1 之外新增域名兜底——location.port 为空时自动按「当前域名 + /fntv-ext」寻址，与 README 4.6/8.3 的 Caddy handle_path /fntv-ext/* 片段一致，两种访问方式都零配置；手动输入框降级为纯覆盖项（仅反代路径不是 /fntv-ext 时才需要填）。
+* [v1.3.13] - 2026-11-27 修正 v1.3.12 的错误判断（用户指出：域名访问实际带端口，README 4.6 就是 https://域名:50443，此时 location.port 是数字，端口+1 会错误触发指向 域名:50444）：判据从「有没有端口」改为「主机是 IP 还是域名」——IPv4/localhost + 数字端口才走端口+1，域名（带不带端口都算）一律走 当前域名+/fntv-ext（origin 自带端口，https://域名:50443/fntv-ext 正确命中 Caddy）。
 * ==============================================================================
 */
 
@@ -442,6 +454,46 @@
     });
   }
 
+  /* --- trimmedia-ext 旁路容器通信（标题排序修复等，详见 README 第 8 章）--- */
+  var EXT_BASE_KEY = 'fntv_ext_base';
+  var PANEL_POS_KEY = 'fntv_panel_pos';   // 面板位置记忆
+  var PANEL_W_KEY = 'fntv_panel_width';   // 面板宽度记忆
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+  }
+  function extBase() {
+    var saved = (typeof GM_getValue === 'function') ? (GM_getValue(EXT_BASE_KEY) || '') : '';
+    if (saved) return saved.replace(/\/+$/, '');
+    var port = parseInt(location.port, 10);
+    var isIpHost = /^\d{1,3}(\.\d{1,3}){3}$/.test(location.hostname) || location.hostname === 'localhost';
+    if (isIpHost && port) return location.protocol + '//' + location.hostname + ':' + (port + 1);
+    return location.origin + '/fntv-ext';
+  }
+  function extReq(method, path, body) {
+    return new Promise(function(resolve, reject) {
+      var base = extBase();
+      if (!base) { reject(new Error('无法推算扩展服务地址，请在下方输入框手动填写')); return; }
+      if (!token) { reject(new Error('还没抓到登录凭证：刷新页面等 2 秒再点')); return; }
+      if (typeof GM_xmlhttpRequest !== 'function') { reject(new Error('GM_xmlhttpRequest 不可用：脚本没在篡改猴里运行？')); return; }
+      GM_xmlhttpRequest({
+        method: method,
+        url: base + path,
+        data: body ? JSON.stringify(body) : undefined,
+        headers: { 'Authorization': token, 'Content-Type': 'application/json' },
+        timeout: 15000,
+        onload: function(res) {
+          try {
+            var r = JSON.parse(res.responseText);
+          } catch (e) { reject(new Error('返回不是 JSON（端口对吗？）：' + String(res.responseText || '').slice(0, 80))); return; }
+          if (res.status === 200 && r.ok) resolve(r.data || r);
+          else reject(new Error(r.error || ('HTTP ' + res.status + ' ' + String(res.responseText || '').slice(0, 80))));
+        },
+        onerror: function() { reject(new Error('连不上扩展服务 ' + base + '（容器起了吗？端口对吗？）')); },
+        ontimeout: function() { reject(new Error('扩展服务 15 秒无响应')); }
+      });
+    });
+  }
+
   /* --- UI --- */
   function toast(msg, ok) {
     var t = document.createElement('div');
@@ -484,8 +536,17 @@
     var guidHint = isFolder
       ? '目标 guid 已预填为当前目录（整目录识别为该剧）；也可从下方列表选其他条目'
       : '目标条目 guid（打开条目详情页自动带出）';
+    function tabStyle(active) {
+      return 'flex:1;text-align:center;padding:6px 0;border-radius:6px;font-size:12px;cursor:pointer;' +
+        (active ? 'background:#3b82f6;color:#fff;font-weight:600' : 'background:#2a3142;color:#8a93a6');
+    }
     var bodyHtml =
       '<div id="dh-body" style="padding:10px 12px;display:none">' +
+      '  <div id="dh-tabs" style="display:flex;gap:6px;margin-bottom:9px">' +
+      '    <div id="dh-tab-match" style="' + tabStyle(true) + '">豆瓣匹配</div>' +
+      '    <div id="dh-tab-edit" style="' + tabStyle(false) + '">手动改值</div>' +
+      '  </div>' +
+      '  <div id="dh-pagematch">' +
       '  <div style="color:#8a93a6;margin-bottom:6px">' + guidHint + '</div>' +
       '  <input id="dh-guid" placeholder="自动识别，也可手动粘贴" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       (isFolder
@@ -510,12 +571,182 @@
       '    <span>按文件名顺序编号（忽略文件名里的数字）<br>剧名带数字时更稳，如「乡村爱情S16 01」</span></label>' +
       '  <button id="dh-go" style="width:100%;margin-top:10px;padding:8px;border:0;border-radius:6px;background:#e67e22;color:#fff;font-weight:600;cursor:pointer">开始豆瓣匹配</button>' +
       '  <div style="margin-top:8px;color:#66708a;font-size:11px;line-height:1.5">普通库：匹配=重建条目，收藏/播放记录可能丢失。本地 NFO 库（如微短剧2025）：服务端忽略在线匹配，脚本等 45 秒后自动改为直接写入豆瓣数据（海报/简介/年份/评分/演职员，只填空缺不覆盖已有）。</div>' +
+      '  </div>' +
+      '  <div id="dh-pageedit" style="display:none">' +
+      '    <div style="color:#8a93a6;margin-bottom:6px">手动修改条目的 title / sort_title / air_date 字段<br><span style="color:#66708a;font-size:10px">需 trimmedia-ext 容器；在条目详情页打开本面板自动带出当前值</span></div>' +
+      '    <input id="dh-extbase" placeholder="扩展服务地址：留空=自动（IP访问端口+1；域名访问走 /fntv-ext）" style="width:100%;box-sizing:border-box;padding:5px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:11px">' +
+      '    <div id="dh-editinfo" style="color:#a8b3c7;font-size:12px;line-height:1.6">正在读取当前条目…</div>' +
+      '    <div id="dh-editform" style="display:none">' +
+      '      <div style="color:#8a93a6;margin:8px 0 4px;font-size:11px">标题</div>' +
+      '      <input id="dh-etitle" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '      <div style="color:#8a93a6;margin:8px 0 4px;font-size:11px">sort_title（官方「标题」排序实际读这个字段）</div>' +
+      '      <input id="dh-esort" placeholder="须为：相同前缀 + 补零两位数字，如 权力的游戏02" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '      <div style="color:#66708a;margin-top:3px;font-size:10px;line-height:1.5">排序按此字段的字典序：数字必须补零（01、02…），写成 1、2、10 会排成 1,10,2；中文数字（第一、第二季）按码点排序必然乱。</div>' +
+      '      <div style="color:#8a93a6;margin:8px 0 4px;font-size:11px">发行时间（YYYY-MM-DD，清空输入框=清空该值）</div>' +
+      '      <input id="dh-edate" placeholder="YYYY-MM-DD" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '      <div style="margin-top:10px;padding:7px 9px;border-radius:6px;background:#3a2626;border:1px solid #7a3b34;color:#e8a79e;font-size:11px;line-height:1.6">本操作直接写入媒体数据库：请核对修改值后再保存；每次保存前会自动备份数据库，可通过 ext 的 /api/backups/restore 接口恢复。<br>保存后如界面未显示新值，请重启 trimmedia 容器刷新服务端缓存。</div>' +
+      '      <button id="dh-esave" style="display:none;width:100%;margin-top:8px;padding:8px;border:1px solid #7a3b34;border-radius:6px;background:#c0392b;color:#fff;font-weight:600;cursor:pointer">保存修改（一键写库，自动备份）</button>' +
+      '    </div>' +
+      '  </div>' +
       '</div>';
     box.innerHTML = headHtml + bodyHtml;
     document.body.appendChild(box);
 
+    /* --- tab 切换 --- */
+    var pageMatch = box.querySelector('#dh-pagematch'), pageEdit = box.querySelector('#dh-pageedit');
+    var tabMatch = box.querySelector('#dh-tab-match'), tabEdit = box.querySelector('#dh-tab-edit');
+    function switchTab(name) {
+      var map = { match: [pageMatch, tabMatch], edit: [pageEdit, tabEdit] };
+      Object.keys(map).forEach(function(k) {
+        map[k][0].style.display = (k === name) ? 'block' : 'none';
+        map[k][1].style.cssText = tabStyle(k === name);
+      });
+      if (name === 'edit') loadEdit();
+    }
+    tabMatch.addEventListener('click', function() { switchTab('match'); });
+    tabEdit.addEventListener('click', function() { switchTab('edit'); });
+
+    /* --- 扩展服务地址（手动改值 tab 里设置，GM 记忆） --- */
+    var extBaseInput = box.querySelector('#dh-extbase');
+    extBaseInput.value = (typeof GM_getValue === 'function') ? (GM_getValue(EXT_BASE_KEY) || '') : '';
+    extBaseInput.addEventListener('change', function() {
+      var v = extBaseInput.value.trim().replace(/\/+$/, '');
+      if (typeof GM_setValue === 'function') GM_setValue(EXT_BASE_KEY, v);
+      toast(v ? '扩展服务地址已保存：' + v : '已清除，恢复自动寻址（IP端口+1 / 域名 /fntv-ext）', true);
+    });
+
+    /* --- 手动改值：读取当前条目 → 直接改 title/sort_title/air_date → 一键写库（自动备份） --- */
+    var editItem = null;   // 当前条目快照（来自 ext /api/item/preview）
+    function loadEdit() {
+      var info = box.querySelector('#dh-editinfo'), form = box.querySelector('#dh-editform');
+      var saveBtn = box.querySelector('#dh-esave');
+      editItem = null;
+      form.style.display = 'none'; saveBtn.style.display = 'none';
+      if (!p.guid) {
+        info.innerHTML = '<span style="color:#e67e22">请先打开某个条目的详情页（如剧集/电影/季的页面），再回来读取</span>';
+        return;
+      }
+      info.textContent = '正在读取当前条目…';
+      extReq('GET', '/api/item/preview?guid=' + encodeURIComponent(p.guid))
+        .then(function(data) {
+          editItem = data.item || data;
+          if (editItem.type === 'MediaDB' || editItem.type === 'Directory') {
+            info.innerHTML = '<span style="color:#e67e22">⚠ 当前 guid 是' +
+              (editItem.type === 'MediaDB' ? '媒体库' : '目录') + '节点（' + esc(editItem.title) + '），改标题会连库名一起改。' +
+              '请到具体的剧/电影/季详情页再操作</span>';
+            return;
+          }
+          info.innerHTML = '当前条目：<b>' + esc(editItem.title) + '</b>（' + esc(editItem.type || '?') + '）';
+          form.style.display = 'block';
+          saveBtn.style.display = 'block';
+          box.querySelector('#dh-etitle').value = editItem.title || '';
+          box.querySelector('#dh-esort').value = editItem.sort_title || '';
+          box.querySelector('#dh-edate').value = editItem.air_date || editItem.first_air_date || '';
+        })
+        .catch(function(e) {
+          info.innerHTML = '<span style="color:#e67e22">读取失败：' + esc(e.message) +
+            '（ext 服务没通？检查上方「扩展服务地址」）</span>';
+        });
+    }
+    box.querySelector('#dh-esave').addEventListener('click', function() {
+      if (!editItem) return;
+      var saveBtn = box.querySelector('#dh-esave'), info = box.querySelector('#dh-editinfo');
+      var newTitle = box.querySelector('#dh-etitle').value.trim();
+      var newSort = box.querySelector('#dh-esort').value.trim();
+      var newDate = box.querySelector('#dh-edate').value.trim();
+      var fields = {};
+      if (newTitle && newTitle !== editItem.title) fields.title = newTitle;
+      if (newSort !== (editItem.sort_title || '')) fields.sort_title = newSort;
+      if (newDate !== (editItem.air_date || '')) fields.air_date = newDate;
+      if (newDate !== (editItem.first_air_date || '')) fields.first_air_date = newDate;
+      if (!Object.keys(fields).length) {
+        info.innerHTML = '<span style="color:#42b983">没有改动，无需保存</span>';
+        return;
+      }
+      saveBtn.disabled = true;
+      saveBtn.textContent = '写库中…';
+      extReq('POST', '/api/patch/apply', { items: [{ guid: editItem.guid, fields: fields }] })
+        .then(function(d) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = '保存修改（一键写库，自动备份）';
+          info.innerHTML = '<span style="color:#42b983">✓ 已写入 ' + d.changed + ' 项：' +
+            Object.keys(fields).join(' / ') + '。备份：' + esc(d.backup || '-') +
+            '<br>如界面未显示新值，请重启 trimmedia 容器刷新服务端缓存</span>';
+          editItem.title = newTitle; editItem.sort_title = newSort;
+          editItem.air_date = newDate; editItem.first_air_date = newDate;
+        })
+        .catch(function(e) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = '保存修改（一键写库，自动备份）';
+          info.innerHTML = '<span style="color:#e67e22">写入失败：' + esc(e.message) + '</span>';
+        });
+    });
+
     var head = box.querySelector('#dh-head'), body = box.querySelector('#dh-body'), arrow = box.querySelector('#dh-arrow');
+
+    /* --- 面板几何：位置记忆 + 标题栏拖动 + 右下角调宽 --- */
+    function geom() {
+      if (typeof GM_getValue !== 'function') return;
+      var w = parseInt(GM_getValue(PANEL_W_KEY, ''), 10);
+      if (w >= 280 && w <= 700) box.style.width = w + 'px';
+      var pos = GM_getValue(PANEL_POS_KEY);
+      if (pos && pos.x != null) {
+        box.style.left = Math.min(pos.x, Math.max(0, window.innerWidth - 80)) + 'px';
+        box.style.top = Math.min(pos.y, Math.max(0, window.innerHeight - 36)) + 'px';
+        box.style.right = 'auto';
+        box.style.bottom = 'auto';
+      }
+    }
+    geom();
+    var dragState = { down: false, moved: false, sx: 0, sy: 0, ox: 0, oy: 0 };
+    head.addEventListener('mousedown', function(e) {
+      if (e.button !== 0) return;
+      var r = box.getBoundingClientRect();
+      dragState = { down: true, moved: false, sx: e.clientX, sy: e.clientY, ox: r.left, oy: r.top };
+      e.preventDefault();
+    });
+    document.addEventListener('mousemove', function(e) {
+      if (!dragState.down) return;
+      var dx = e.clientX - dragState.sx, dy = e.clientY - dragState.sy;
+      if (!dragState.moved && Math.abs(dx) + Math.abs(dy) > 5) dragState.moved = true;
+      if (!dragState.moved) return;
+      box.style.left = Math.max(0, Math.min(dragState.ox + dx, window.innerWidth - 80)) + 'px';
+      box.style.top = Math.max(0, Math.min(dragState.oy + dy, window.innerHeight - 36)) + 'px';
+      box.style.right = 'auto';
+      box.style.bottom = 'auto';
+    });
+    document.addEventListener('mouseup', function() {
+      if (!dragState.down) return;
+      dragState.down = false;
+      if (dragState.moved && typeof GM_setValue === 'function') {
+        GM_setValue(PANEL_POS_KEY, { x: parseInt(box.style.left, 10), y: parseInt(box.style.top, 10) });
+      }
+    });
+    var grip = document.createElement('div');
+    grip.textContent = '◢';
+    grip.title = '拖动调整面板宽度';
+    grip.style.cssText = 'position:absolute;right:2px;bottom:1px;width:16px;height:16px;color:#5a6275;' +
+      'cursor:nwse-resize;font-size:11px;line-height:16px;text-align:center;user-select:none;z-index:2';
+    box.appendChild(grip);
+    var gripState = { down: false, sw: 0, sx: 0 };
+    grip.addEventListener('mousedown', function(e) {
+      gripState = { down: true, sw: box.offsetWidth, sx: e.clientX };
+      e.preventDefault();
+      e.stopPropagation();
+    });
+    document.addEventListener('mousemove', function(e) {
+      if (!gripState.down) return;
+      var w = Math.max(280, Math.min(gripState.sw + e.clientX - gripState.sx, Math.floor(window.innerWidth * 0.75), 700));
+      box.style.width = w + 'px';
+    });
+    document.addEventListener('mouseup', function() {
+      if (!gripState.down) return;
+      gripState.down = false;
+      if (typeof GM_setValue === 'function') GM_setValue(PANEL_W_KEY, box.offsetWidth);
+    });
+
     head.addEventListener('click', function() {
+      if (dragState.moved) { dragState.moved = false; return; }  // 拖动结束的落点不算点击，避免折叠
       var open = body.style.display !== 'none';
       body.style.display = open ? 'none' : 'block';
       arrow.textContent = open ? '▸' : '▾';

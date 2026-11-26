@@ -92,7 +92,8 @@ flowchart LR
 - [5. 飞牛影视建媒体库](#5-飞牛影视建媒体库)
 - [6. 装浏览器插件](#6-装浏览器插件豆瓣匹配--修复集号)
 - [7. FAQ](#7-faq)
-- [8. 备份与升级](#8-备份与升级)
+- [8. trimmedia-ext：标题排序修复](#8-trimmedia-ext标题排序修复官方-bug-的自救方案)
+- [9. 备份与升级](#9-备份与升级)
 
 > 想换自己的截图 / 看某张图对应哪一步？见 [SCREENSHOTS.md](SCREENSHOTS.md)。
 
@@ -487,6 +488,7 @@ https://你的域名:50443 {
 要点：
 
 - **`/d/*` 这条必须在**，OpenList 的直链前缀就是 `/d/`（对应 4.1 里的「路径前缀」）
+- 如果同时部署了 trimmedia-ext（第 8 章），再加一条 `handle_path /fntv-ext/* { reverse_proxy 127.0.0.1:2291 }`，插件的域名模式寻址靠的就是这个约定路径
 - `reverse_proxy /d/*` 写在主 `reverse_proxy` 之后也没问题，Caddy 按最长匹配优先，但**主机名要写全**（`192.168.1.10:15827`，带端口）
 - 用 `tls ... { dns cloudflare }` 是为了 **DNS-01 验证**：不用把 80/443 暴露到公网，非标端口（50443）也能签证书
 - 这个 `dns cloudflare` 需要**带 DNS 插件的 Caddy**（官方镜像不含）：用 `caddy build --with github.com/caddy-dns/cloudflare`，或直接用 `ghcr.io/caddybuilds/caddy-cloudflare`
@@ -805,7 +807,100 @@ OpenList → **管理 → 设置 → 全局 → 「令牌（Token）」**，改�
 
 ---
 
-## 8. 备份与升级
+## 8. trimmedia-ext：标题排序修复（官方 bug 的自救方案）
+
+**先说结论**：飞牛影视按「标题」排序读的是隐藏列 `sort_title`，数字不补零就会排成 1,10,11,2,3 这种字典序（`乡村爱情` 系列实测：18 排第一）。这是官方已知 bug（论坛 tid=68921、tid=54046，2026 年 2 月反馈至今未修），官方接口**没有任何写入口**能改这个字段，改片名也不更新。
+
+本 kit 的解法：一个**旁路小容器**直接操作 trimmedia 的 sqlite 数据库。不注入官方容器、不动官方镜像，删掉几行 compose 配置就完全还原。
+
+### 8.1 它能做什么
+
+| 模块 | 能力 | 说明 |
+|---|---|---|
+| `patch` | 条目字段修正 | 白名单字段（标题/sort_title/发行时间/季数/集数/评分等）预览后写库——修复错误刮削、补豆瓣评分、修正排序 |
+| `item` | 条目读取（只读） | 按 guid 返回标题/发行时间等可编辑字段，供插件「手动改值」表单预填 |
+| `orphans` | 孤儿条目清理 | 删剧后残留的悬空单集检测与删除 |
+| `health` | 库健康检查 | 只读统计：无封面/缺日期/孤儿/重复路径 |
+
+**安全机制**：所有写操作都是「预览 → 确认 → 执行」两段式；每次写库前自动备份（保留最新 10 份，可一键恢复）；字段白名单写死，**没有任何任意 SQL 入口**；鉴权复用官方登录态——插件转发的 token 会回官方验证 `is_admin`，只有管理员能调。
+
+### 8.2 启用（约 2 分钟）
+
+镜像固定 `python:3.11-alpine3.20`（纯标准库零依赖，无 build 无 pip install）。
+
+**方式一：docker run（推荐，一条命令，不用保存任何文件）**
+
+```bash
+# 1. 下载服务脚本到 NAS（就一个文件）
+mkdir -p /volume1/docker/fntv-ext && cd /volume1/docker/fntv-ext
+curl -L -o server.py https://raw.githubusercontent.com/jamosnet/fntv-douban-kit/main/ext/server.py
+
+# 2. 起容器（改两处：数据目录路径、飞牛影视地址）
+docker run -d --name trimmedia-ext --restart unless-stopped \
+  -p 2291:80 \
+  -e FNTV_DB=/data/database/trimmedia.db \
+  -e FNTV_BACKUP_DIR=/data/ext-backups \
+  -e FNTV_TRIM_URL=http://192.168.8.138:2290 \
+  -v /volume1/docker/fntv-ext:/ext:ro \
+  -v /volume1/docker/trimmedia/data:/data \
+  python:3.11-alpine3.20 \
+  python /ext/server.py
+```
+
+> 两个挂载：`/ext` 放刚下载的 server.py（只读）；`/data` 是 trimmedia 挂载出来的数据目录，里面要有 `database/trimmedia.db`。
+> `FNTV_TRIM_URL` 填你的飞牛影视地址，用于管理员鉴权。
+
+**方式二：compose**
+
+`docker-compose.yml` 里找到 `trimmedia-ext` 注释块，去掉行首 `# `，改 `FNTV_TRIM_URL` 和数据目录两处，然后 `docker compose up -d trimmedia-ext`。
+
+**验证**：浏览器开 `http://NAS的IP:2291/` 看到 JSON 服务信息即成功（端口约定 = 影视端口 + 1）。
+
+**升级**：重新下载 server.py 覆盖旧文件，然后 `docker restart trimmedia-ext` 即可（数据库与备份不受影响）。
+
+### 8.3 篡改猴插件里用
+
+插件面板第二个 tab「**手动改值**」（通用排序修复）：
+
+- 官方「标题」排序实际读的是隐藏字段 `sort_title`，「发行时间」排序读 `air_date/first_air_date`——这些值官方界面都不给改，本 tab 就是补这个缺口的
+- 在**条目详情页**打开面板自动带出当前 **title / sort_title / 发行时间**，三个都是独立可编辑字段，改完点「保存修改」一键写库（每次写入前自动备份，可通过 `/api/backups/restore` 恢复）
+- 用法示例：权力的游戏第二季 → 标题改 `权力的游戏 02`、sort_title 改 `权力的游戏 02`、发行时间填 `2012-04-01`，之后无论按标题还是按发行时间排序都自然正确
+- 扩展服务地址输入框就在本 tab，**通常留空即可**（自动寻址）：**IP 访问**（含 localhost）按「当前页面端口 +1」（2290 → 2291）；**域名访问**（带不带端口都算，如 `https://你的域名:50443`）按「当前域名 + `/fntv-ext`」寻址。只有当反代路径不是 `/fntv-ext` 时才手动填实际地址：
+  ```
+  handle_path /fntv-ext/* {
+      reverse_proxy 127.0.0.1:2291
+  }
+  ```
+- 面板支持**标题栏拖动**移动位置、**右下角◢拖拽**调宽度，位置和宽度都会记住
+
+**sort_title 的正确写法（实测结论，勿踩坑）**：官方按 `sort_title` 列做 SQLite 默认字节序排序，所以：
+
+- ✅ 正确格式 = **相同前缀 + 补零两位数字**：`乡村爱情01`…`乡村爱情18`、`权力的游戏01`…`权力的游戏08`——字典序即自然序
+- ❌ 中文数字是坑：`第一季`…`第八季` 按字节序排成一<七<三<二<五<六<四<八（Unicode 码点乱序）；纯拼音不补零同样 1,10,11,2 乱
+- ❌ 标题与 sort_title 都改成中文并**不会**让排序正确，sort_title 里必须出现可比较的阿拉伯数字
+- ⚠ **官方「编辑信息」保存时会自动重写 sort_title**（把标题拼音化/原文写入），所以用官方编辑改过标题后，sort_title 会被打回原形——改完标题记得回本面板把 sort_title 再写成补零格式
+- 已通过官方接口实测：写入补零格式后刷新页面立即生效，无需重启（官方按需读库，无强制缓存）
+
+> 更早的「排序修复」批量模块（`/api/sortfix`，「剧名+数字」正则补零）已在 ext 1.2.1 整体移除：场景有限，改用本 tab 逐条改 sort_title 即可。
+
+### 8.4 手动验证（不用插件也行）
+
+```bash
+# 预览会改什么（只读；guid 换成实际条目）
+curl -X POST "http://NAS的IP:2291/api/patch/preview" \
+  -H "X-Ext-Token: 你的token" -H "Content-Type: application/json" \
+  -d '{"items":[{"guid":"条目guid","fields":{"sort_title":"权力的游戏02"}}]'
+```
+
+命令行调试可给容器加环境变量 `-e FNTV_TOKEN=你的调试token`（run 命令里加一行即可），之后所有请求带 `-H "X-Ext-Token: ..."`。不设则只认官方管理员 token。
+
+### 8.5 代码在哪
+
+`ext/server.py` 一个文件，Python 3.11 纯标准库（`python:3.11-alpine3.20` 镜像，无 build 无 pip install），全部逻辑明文可审计。测试：`ext/test_local.py`（21 项断言，含官方鉴权联测）。
+
+---
+
+## 9. 备份与升级
 
 **要备份的只有两样**（都不大）
 
@@ -838,7 +933,10 @@ docker rm -f trimmedia
 ├── SCREENSHOTS.md                 截图索引 + 打码规则
 ├── docker-compose.yml             飞牛影视 + OpenList 的 compose
 ├── scripts/deploy.sh              一键建目录 + 起两个容器
-├── fntv-douban-helper.user.js     篡改猴插件（豆瓣匹配 / 修复集号）
+├── fntv-douban-helper.user.js     篡改猴插件（豆瓣匹配 / 修复集号 / 手动改 sort_title 与发行时间）
+├── ext/                           trimmedia-ext 数据库扩展服务（见第 8 章）
+│   ├── server.py                  服务本体：Python 3.11 纯标准库单文件
+│   └── test_local.py              本地端到端测试（21 项断言）
 └── screenshots/                   17 张截图
 ```
 

@@ -40,3 +40,24 @@ services:
     volumes:
       - /volume1/docker/openlist:/opt/openlist/data
       - /volume1/docker/trimmedia/media/strm:/strm # 与上面的 media 目录保持同一父目录
+
+  # ---------- trimmedia-ext（数据库扩展接口，可选） ----------
+  # 配合篡改猴插件实现「标题排序修复」等官方接口做不到的能力（详见 README 第 8 章）
+  # 启用方法：去掉下面各行行首的 "# "，把两处路径/地址改成你的实际值
+  #
+  # trimmedia-ext:
+  #   image: python:3.11-alpine3.20 # 固定版本，纯标准库零依赖，无 build 无 pip
+  #   container_name: trimmedia-ext
+  #   restart: unless-stopped
+  #   ports:
+  #     - "2291:80" # 约定：影视端口 +1（2290 -> 2291），插件默认按此自动寻址
+  #   environment:
+  #     - FNTV_DB=/data/database/trimmedia.db # 挂载目录里 trimmedia.db 的位置
+  #     - FNTV_BACKUP_DIR=/data/ext-backups   # 自动备份目录（保留最新 10 份）
+  #     - FNTV_TRIM_URL=http://192.168.8.138:2290 # 你的飞牛影视地址，用于管理员鉴权
+  #     # - FNTV_TOKEN=调试用静态token        # 可选，给 curl 调试用
+  #   volumes:
+  #     - ./ext:/ext:ro # 本仓库的 ext/server.py，明文可审计
+  #     - /volume1/docker/trimmedia/data:/data # trimmedia 的数据目录（含 database/trimmedia.db）
+  #   command: python /ext/server.py
+
