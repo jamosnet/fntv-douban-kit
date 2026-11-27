@@ -2,7 +2,7 @@
 // @name         飞牛影视 豆瓣匹配助手
 // @name:en      Feiniu Douban Helper
 // @namespace    https://github.com/jamosnet/fntv-douban-kit
-// @version      1.3.13-20261127
+// @version      1.3.16-20261127
 // @description  给飞牛影视网页版添加"豆瓣匹配"和"集号修复"入口。豆瓣匹配：官方手动匹配无豆瓣来源，本脚本支持；本地 NFO 库自动降级为直接写入。集号修复：文件名裸数字/无集号标记导致全部归入"特别篇"（0季0集）时，按文件名批量重编季/集号。
 // @description:en Add Douban metadata matching and batch episode renumbering to the Feiniu (fnOS / trimmedia) web UI.
 // @author       jamosnet
@@ -43,6 +43,9 @@
 * [v1.3.11] - 2026-11-27 文案正式化（用户反馈）：①「排序值」叫法有歧义，字段名统一直接用 sort_title，说明行加补零规则（同前缀+补零两位数字，1/2/10 与中文数字都会乱序）；② 警示条改为正式措辞（直接写库请核对后保存 / 保存前自动备份可经 /api/backups/restore 恢复 / 未显示新值请重启 trimmedia 容器）。配套 ext 1.2.1 删除 sortfix 模块（面板已作废，残留代码徒增维护负担）。
 * [v1.3.12] - 2026-11-27 寻址约定延伸到域名模式（用户反馈：配了 Caddy2 后端口+1 失效还得手动填地址，约定不该断）：端口+1 之外新增域名兜底——location.port 为空时自动按「当前域名 + /fntv-ext」寻址，与 README 4.6/8.3 的 Caddy handle_path /fntv-ext/* 片段一致，两种访问方式都零配置；手动输入框降级为纯覆盖项（仅反代路径不是 /fntv-ext 时才需要填）。
 * [v1.3.13] - 2026-11-27 修正 v1.3.12 的错误判断（用户指出：域名访问实际带端口，README 4.6 就是 https://域名:50443，此时 location.port 是数字，端口+1 会错误触发指向 域名:50444）：判据从「有没有端口」改为「主机是 IP 还是域名」——IPv4/localhost + 数字端口才走端口+1，域名（带不带端口都算）一律走 当前域名+/fntv-ext（origin 自带端口，https://域名:50443/fntv-ext 正确命中 Caddy）。
+* [v1.3.14] - 2026-11-27 新增【特别篇检查】（用户需求：全库一批 季=0集=0 的集实际是集号错乱，要能一键列出并手动修正）：库页用 /item/list ancestor_guid 形式列剧后逐层下钻（真库实测 75 部剧 171 次调用 20 秒），命中集取 /media/itemfile 拿文件名+media_guid（列表响应 file_name 为空，必须单集取）；按剧分组展示、集号按文件名预填、逐行可改季/集；提交走 /scrap/rescrap/batch（与修复集号同通道，服务端自动重建季节结构），按剧分批+逐批进度。纯官方 API，ext 无改动。
+* [v1.3.15] - 2026-11-27 特别篇检查改为全库发现模式（用户纠正：功能目的是「发现哪些剧需要处理」，不是扫当前打开的剧——剧都打开了还要扫描毫无意义）：无论在哪个页面点，一律 /item/list 不带 ancestor_guid 扁平拉全库条目取所有 TV 逐部下钻（实测全库 418 条目、约 90 部剧），结果按剧折叠分组（剧名+条数，默认收起），点开某部剧才逐集取文件名并预填季/集，按剧单独提交 rescrap/batch；按钮文案改「扫全库，找出带特别篇的剧」，去掉页面类型限制。
+* [v1.3.16] - 2026-11-27 面板排版重整（用户反馈截图排版问题）：①豆瓣匹配 tab 按功能分两组（豆瓣匹配 / 集号修复），组间加小节标题+分隔线；②控件规格统一——输入框/下拉/按钮统一 28px 高、12px 字号、6px 圆角，主按钮（开始豆瓣匹配/保存修改）32px；③颜色收敛三档：主操作蓝实心、常规操作中性描边或绿实心、诊断工具（特别篇检查）橙描边次级样式；④「开始豆瓣匹配」从面板垫底移回匹配组末尾；⑤豆瓣链接标签单行化，长示例挪进 placeholder；⑥手动改值 tab 输入框同步统一规格。纯样式调整，逻辑零改动。
 * ==============================================================================
 */
 
@@ -454,6 +457,177 @@
     });
   }
 
+  /* --- 特别篇检查（全库发现）：不管当前在哪个页面，扫全部剧集，找出哪些剧带 季=0集=0 的错挂集 ---
+     /item/list 不带 ancestor_guid 即扁平返回全库条目，从中取 TV 逐部下钻计数；
+     发现阶段只列剧+计数（快），点开剧名才逐集取 /media/itemfile 文件名预填季/集；
+     修正提交 /scrap/rescrap/batch（与修复集号同通道，服务端自动重建季节结构） */
+  function scanSpecials(btn, resultBox) {
+    var BTN_SP = '特别篇检查（扫全库，找出带特别篇的剧）';
+    btn.disabled = true;
+    resultBox.style.display = 'none';
+    resultBox.innerHTML = '';
+    var t0 = Date.now();
+    var shows = [];    // 命中剧：{ guid, title, hits:[集guid], _rows:展开后取到的文件行 }
+    var scanned = 0;
+    function prog(msg) { btn.textContent = msg; }
+    function restore() { btn.disabled = false; btn.textContent = BTN_SP; }
+
+    function listAll(extra, maxPages) {
+      var out = [], page = 1;
+      function one() {
+        var b = {}, k;
+        for (k in extra) b[k] = extra[k];
+        b.page = page; b.page_size = 300;
+        return trimPost('/item/list', b).then(function(r) {
+          var lst = ((r && r.data) || {}).list || [];
+          out = out.concat(lst);
+          if (lst.length >= 300 && page < (maxPages || 50)) { page++; return one(); }
+          return out;
+        });
+      }
+      return one();
+    }
+    function listChildren(parentGuid) { return listAll({ parent_guid: parentGuid }, 20); }
+    function isSpecial(it) {
+      return String(it.type || '').toLowerCase() === 'episode' && !Number(it.season_number) && !Number(it.episode_number);
+    }
+
+    function countShow(tv) {
+      return listChildren(tv.guid).then(function(kids) {
+        scanned++;
+        prog('扫描中 第' + scanned + '部：' + (tv.title || '(无题)') + '，已发现 ' + shows.length + ' 部');
+        var hits = [];
+        var chain = Promise.resolve();
+        kids.forEach(function(k) {
+          var t = String(k.type || '').toLowerCase();
+          if (isSpecial(k)) hits.push(k.guid);
+          else if (t === 'season') {
+            chain = chain.then(function() {
+              return listChildren(k.guid).then(function(eps) {
+                eps.forEach(function(e) { if (isSpecial(e)) hits.push(e.guid); });
+              });
+            });
+          }
+        });
+        return chain.then(function() {
+          if (hits.length) shows.push({ guid: tv.guid, title: tv.title || '(无题)', hits: hits, _rows: null });
+        });
+      });
+    }
+
+    function renderResults() {
+      var total = 0;
+      shows.forEach(function(s) { total += s.hits.length; });
+      var html = '<div style="color:#a8b3c7;font-size:11px;margin-bottom:4px">全库 ' + scanned + ' 部剧扫完：<b>' + shows.length + '</b> 部带特别篇，共 <b>' + total + '</b> 条错挂集。点开剧名核对修正：</div>';
+      shows.forEach(function(s, si) {
+        html += '<div class="dh-sp-show" data-si="' + si + '" style="margin:4px 0;border:1px solid #2a3142;border-radius:6px;overflow:hidden">' +
+          '<div class="dh-sp-head" style="display:flex;justify-content:space-between;align-items:center;gap:6px;padding:6px 8px;background:#1b2130;cursor:pointer">' +
+          '<span style="color:#e0c48a;font-size:11px;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + esc(s.title) + '</span>' +
+          '<span class="dh-sp-count" style="color:#8a93a6;font-size:10px;flex-shrink:0">' + s.hits.length + ' 条 ▸</span></div>' +
+          '<div class="dh-sp-body" style="display:none;padding:6px 8px"></div></div>';
+      });
+      resultBox.innerHTML = html;
+      resultBox.style.display = 'block';
+      Array.prototype.forEach.call(resultBox.querySelectorAll('.dh-sp-head'), function(head) {
+        head.addEventListener('click', function() { toggleShow(head.parentNode); });
+      });
+    }
+
+    function toggleShow(root) {
+      var s = shows[parseInt(root.getAttribute('data-si'), 10)];
+      var body = root.querySelector('.dh-sp-body');
+      var cnt = root.querySelector('.dh-sp-count');
+      if (body.style.display !== 'none') { body.style.display = 'none'; cnt.textContent = s.hits.length + ' 条 ▸'; return; }
+      body.style.display = 'block';
+      cnt.textContent = s.hits.length + ' 条 ▾';
+      if (s._rows) return;   // 已展开过
+      cnt.textContent = '读取文件名…';
+      var rows = [];
+      var chain = Promise.resolve();
+      s.hits.forEach(function(eg) {
+        chain = chain.then(function() {
+          return trimGet('/media/itemfile/' + eg).catch(function() { return null; }).then(function(fr) {
+            var arr = (fr && fr.data) || [];
+            (Array.isArray(arr) ? arr : []).forEach(function(f) {
+              if (f && f.media_guid) rows.push({ media_guid: f.media_guid, filename: f.filename || '' });
+            });
+          });
+        });
+      });
+      chain.then(function() {
+        s._rows = rows;
+        if (!rows.length) { body.innerHTML = '<div style="color:#e08a8a;font-size:10px;padding:4px 0">没有取到文件信息</div>'; cnt.textContent = '0 条 ▾'; return; }
+        var inner = '';
+        rows.forEach(function(r, ri) {
+          var ep = parseEpFromFilename(r.filename);
+          inner += '<div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">' +
+            '<input type="checkbox" class="dh-sp-ck" data-ri="' + ri + '" checked style="flex-shrink:0">' +
+            '<span title="' + esc(r.filename) + '" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#dde3ee;font-size:10px">' + esc(r.filename || '(无文件名)') + '</span>' +
+            '<span style="color:#8a93a6;font-size:10px;flex-shrink:0">季</span><input class="dh-sp-sn" data-ri="' + ri + '" type="number" value="1" min="0" max="99" style="width:42px;box-sizing:border-box;padding:3px;border-radius:4px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:11px">' +
+            '<span style="color:#8a93a6;font-size:10px;flex-shrink:0">集</span><input class="dh-sp-ep" data-ri="' + ri + '" type="number" value="' + (ep > 0 ? ep : '') + '" min="1" max="9999" style="width:50px;box-sizing:border-box;padding:3px;border-radius:4px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:11px">' +
+            '</div>';
+        });
+        inner += '<button class="dh-spsubmit" style="width:100%;margin-top:6px;padding:6px;border:0;border-radius:6px;background:#c0392b;color:#fff;font-weight:600;cursor:pointer">提交修正（该剧勾选集）</button>';
+        body.innerHTML = inner;
+        cnt.textContent = rows.length + ' 条 ▾';
+        body.querySelector('.dh-spsubmit').addEventListener('click', function() { submitShow(s, body, this); });
+      });
+    }
+
+    function submitShow(s, body, btnEl) {
+      var rows = s._rows || [];
+      var picked = [];
+      Array.prototype.forEach.call(body.querySelectorAll('.dh-sp-ck'), function(ck) {
+        if (!ck.checked) return;
+        var ri = parseInt(ck.getAttribute('data-ri'), 10);
+        var row = rows[ri];
+        if (!row || !row.media_guid) return;
+        var sn = parseInt(body.querySelector('.dh-sp-sn[data-ri="' + ri + '"]').value, 10);
+        var ep = parseInt(body.querySelector('.dh-sp-ep[data-ri="' + ri + '"]').value, 10);
+        if (!isNaN(sn) && sn >= 0 && !isNaN(ep) && ep >= 1) picked.push({ row: row, sn: sn, ep: ep });
+      });
+      if (!picked.length) { toast('没有可提交的行：需要勾选且季/集号合法（集 ≥ 1）', false); return; }
+      btnEl.disabled = true;
+      btnEl.textContent = '提交中…';
+      getEditDetail(s.guid).then(function(d) {
+        var trimId = (d && d.trim_id) || '';
+        var media = picked.map(function(pp) { return { media_guid: pp.row.media_guid, season_number: pp.sn, episode_number: pp.ep, source: 'trim_id', source_id: trimId }; });
+        return trimPost('/scrap/rescrap/batch', { media_items: media }).then(function(r) {
+          if (!r || r.code !== 0) throw new Error((r && r.msg) || '未知错误');
+          toast('【' + s.title + '】' + media.length + ' 条已提交。服务端重建季节结构约 20–40 秒，之后刷新页面查看', true);
+          btnEl.textContent = '已提交 ✓';
+        });
+      }).catch(function(e) {
+        toast('提交失败：' + String((e && e.message) || e).slice(0, 60), false);
+        btnEl.disabled = false;
+        btnEl.textContent = '提交修正（该剧勾选集）';
+      });
+    }
+
+    prog('扫描中…');
+    listAll({}, 50).then(function(flat) {
+      var tvs = [], seen = {};
+      flat.forEach(function(it) {
+        if (String(it.type || '').toLowerCase() === 'tv' && it.guid && !seen[it.guid]) { seen[it.guid] = 1; tvs.push(it); }
+      });
+      if (!tvs.length) throw new Error('全库没扫到剧集条目');
+      var chain = Promise.resolve();
+      tvs.forEach(function(tv) { chain = chain.then(function() { return countShow(tv); }); });
+      return chain;
+    }).then(function() {
+      restore();
+      var secs = Math.round((Date.now() - t0) / 1000);
+      if (!shows.length) { toast('扫完了：全库 ' + scanned + ' 部剧都没有 季=0集=0 的特别篇（' + secs + ' 秒）', true); return; }
+      renderResults();
+      var total = 0;
+      shows.forEach(function(s) { total += s.hits.length; });
+      toast('扫完：' + shows.length + ' 部剧带特别篇，共 ' + total + ' 条（' + secs + ' 秒）。点开剧名逐条修正', true);
+    }).catch(function(e) {
+      toast('扫描失败：' + String((e && e.message) || e).slice(0, 80), false);
+      restore();
+    });
+  }
+
   /* --- trimmedia-ext 旁路容器通信（标题排序修复等，详见 README 第 8 章）--- */
   var EXT_BASE_KEY = 'fntv_ext_base';
   var PANEL_POS_KEY = 'fntv_panel_pos';   // 面板位置记忆
@@ -547,45 +721,49 @@
       '    <div id="dh-tab-edit" style="' + tabStyle(false) + '">手动改值</div>' +
       '  </div>' +
       '  <div id="dh-pagematch">' +
+      '  <div style="display:flex;align-items:center;gap:6px;margin:0 0 8px;color:#8a93a6;font-size:11px"><span>豆瓣匹配</span><span style="flex:1;height:1px;background:#2a3142"></span></div>' +
       '  <div style="color:#8a93a6;margin-bottom:6px">' + guidHint + '</div>' +
-      '  <input id="dh-guid" placeholder="自动识别，也可手动粘贴" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '  <input id="dh-guid" placeholder="自动识别，也可手动粘贴" style="width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       (isFolder
-        ? '  <button id="dh-fbtn" style="width:100%;margin-top:8px;padding:6px;border:0;border-radius:6px;background:#8e44ad;color:#fff;cursor:pointer">重新读取本目录条目</button>' +
+        ? '  <button id="dh-fbtn" style="width:100%;margin-top:8px;height:28px;border:1px solid #3a4256;border-radius:6px;background:transparent;color:#dde3ee;cursor:pointer;font-size:12px">重新读取本目录条目</button>' +
           '  <div id="dh-flist" style="margin-top:6px;max-height:180px;overflow:auto;display:none"></div>'
         : '') +
-      '  <div style="color:#8a93a6;margin:8px 0 6px">豆瓣条目链接或 ID（如 movie.douban.com/subject/27125544/）</div>' +
-      '  <input id="dh-dbid" placeholder="粘贴链接或纯数字 ID" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '  <div style="color:#8a93a6;margin:8px 0 6px">豆瓣条目（链接或 ID）</div>' +
+      '  <input id="dh-dbid" placeholder="如 movie.douban.com/subject/27125544/ 或纯数字 ID" style="width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       '  <div style="margin-top:8px;display:flex;gap:8px;align-items:center">' +
-      '    <select id="dh-type" style="flex:1;padding:6px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee">' +
+      '    <select id="dh-type" style="flex:1;height:28px;padding:0 6px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       '      <option value="TV">电视剧</option><option value="MOVIE">电影</option></select>' +
-      '    <button id="dh-preview" style="flex:1;padding:6px;border:0;border-radius:6px;background:#3b82f6;color:#fff;cursor:pointer">预览豆瓣</button>' +
+      '    <button id="dh-preview" style="flex:1;height:28px;border:1px solid #3a4256;border-radius:6px;background:transparent;color:#dde3ee;cursor:pointer;font-size:12px">预览豆瓣</button>' +
       '  </div>' +
       '  <div id="dh-info" style="margin-top:8px;font-size:12px;color:#a8b3c7;max-height:130px;overflow:auto;display:none"></div>' +
-      '  <div style="margin-top:10px;display:flex;gap:8px;align-items:center">' +
+      '  <button id="dh-go" style="width:100%;margin-top:10px;height:32px;border:0;border-radius:6px;background:#3b82f6;color:#fff;font-weight:600;cursor:pointer;font-size:13px">开始豆瓣匹配</button>' +
+      '  <div style="display:flex;align-items:center;gap:6px;margin:14px 0 8px;color:#8a93a6;font-size:11px"><span>集号修复</span><span style="flex:1;height:1px;background:#2a3142"></span></div>' +
+      '  <div style="display:flex;gap:8px;align-items:center">' +
       '    <span style="color:#8a93a6;font-size:12px;flex-shrink:0">季号</span>' +
-      '    <input id="dh-season" type="number" value="1" min="0" max="99" style="width:56px;box-sizing:border-box;padding:6px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
-      '    <button id="dh-fixnum" style="flex:1;padding:6px;border:0;border-radius:6px;background:#16a085;color:#fff;cursor:pointer">修复集号（批量）</button>' +
+      '    <input id="dh-season" type="number" value="1" min="0" max="99" style="width:56px;box-sizing:border-box;height:28px;padding:0 6px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '    <button id="dh-fixnum" style="flex:1;height:28px;border:0;border-radius:6px;background:#16a085;color:#fff;cursor:pointer;font-size:12px">修复集号（批量）</button>' +
       '  </div>' +
       '  <label style="display:flex;align-items:flex-start;gap:6px;margin-top:8px;color:#8a93a6;font-size:11px;line-height:1.4;cursor:pointer">' +
       '    <input id="dh-seq" type="checkbox" style="margin:2px 0 0">' +
-      '    <span>按文件名顺序编号（忽略文件名里的数字）<br>剧名带数字时更稳，如「乡村爱情S16 01」</span></label>' +
-      '  <button id="dh-go" style="width:100%;margin-top:10px;padding:8px;border:0;border-radius:6px;background:#e67e22;color:#fff;font-weight:600;cursor:pointer">开始豆瓣匹配</button>' +
-      '  <div style="margin-top:8px;color:#66708a;font-size:11px;line-height:1.5">普通库：匹配=重建条目，收藏/播放记录可能丢失。本地 NFO 库（如微短剧2025）：服务端忽略在线匹配，脚本等 45 秒后自动改为直接写入豆瓣数据（海报/简介/年份/评分/演职员，只填空缺不覆盖已有）。</div>' +
+      '    <span>按文件名顺序编号（忽略文件名里的数字）；剧名带数字时更稳，如「乡村爱情S16 01」</span></label>' +
+      '  <button id="dh-spcheck" style="width:100%;margin-top:10px;height:28px;border:1px solid #a04e2a;border-radius:6px;background:transparent;color:#e8955a;cursor:pointer;font-size:12px">特别篇检查（扫全库，找出带特别篇的剧）</button>' +
+      '  <div id="dh-spresult" style="display:none;margin-top:8px;max-height:300px;overflow:auto;border:1px solid #3a4256;border-radius:6px;padding:6px"></div>' +
+      '  <div style="margin-top:10px;color:#66708a;font-size:11px;line-height:1.5">普通库：匹配=重建条目，收藏/播放记录可能丢失。本地 NFO 库（如微短剧2025）：服务端忽略在线匹配，脚本等 45 秒后自动改为直接写入豆瓣数据（海报/简介/年份/评分/演职员，只填空缺不覆盖已有）。</div>' +
       '  </div>' +
       '  <div id="dh-pageedit" style="display:none">' +
       '    <div style="color:#8a93a6;margin-bottom:6px">手动修改条目的 title / sort_title / air_date 字段<br><span style="color:#66708a;font-size:10px">需 trimmedia-ext 容器；在条目详情页打开本面板自动带出当前值</span></div>' +
-      '    <input id="dh-extbase" placeholder="扩展服务地址：留空=自动（IP访问端口+1；域名访问走 /fntv-ext）" style="width:100%;box-sizing:border-box;padding:5px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:11px">' +
+      '    <input id="dh-extbase" placeholder="扩展服务地址：留空=自动（IP访问端口+1；域名访问走 /fntv-ext）" style="width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       '    <div id="dh-editinfo" style="color:#a8b3c7;font-size:12px;line-height:1.6">正在读取当前条目…</div>' +
       '    <div id="dh-editform" style="display:none">' +
       '      <div style="color:#8a93a6;margin:8px 0 4px;font-size:11px">标题</div>' +
-      '      <input id="dh-etitle" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '      <input id="dh-etitle" style="width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       '      <div style="color:#8a93a6;margin:8px 0 4px;font-size:11px">sort_title（官方「标题」排序实际读这个字段）</div>' +
-      '      <input id="dh-esort" placeholder="须为：相同前缀 + 补零两位数字，如 权力的游戏02" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '      <input id="dh-esort" placeholder="须为：相同前缀 + 补零两位数字，如 权力的游戏02" style="width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       '      <div style="color:#66708a;margin-top:3px;font-size:10px;line-height:1.5">排序按此字段的字典序：数字必须补零（01、02…），写成 1、2、10 会排成 1,10,2；中文数字（第一、第二季）按码点排序必然乱。</div>' +
       '      <div style="color:#8a93a6;margin:8px 0 4px;font-size:11px">发行时间（YYYY-MM-DD，清空输入框=清空该值）</div>' +
-      '      <input id="dh-edate" placeholder="YYYY-MM-DD" style="width:100%;box-sizing:border-box;padding:6px 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
+      '      <input id="dh-edate" placeholder="YYYY-MM-DD" style="width:100%;box-sizing:border-box;height:28px;padding:0 8px;border-radius:6px;border:1px solid #3a4256;background:#171b24;color:#dde3ee;font-size:12px">' +
       '      <div style="margin-top:10px;padding:7px 9px;border-radius:6px;background:#3a2626;border:1px solid #7a3b34;color:#e8a79e;font-size:11px;line-height:1.6">本操作直接写入媒体数据库：请核对修改值后再保存；每次保存前会自动备份数据库，可通过 ext 的 /api/backups/restore 接口恢复。<br>保存后如界面未显示新值，请重启 trimmedia 容器刷新服务端缓存。</div>' +
-      '      <button id="dh-esave" style="display:none;width:100%;margin-top:8px;padding:8px;border:1px solid #7a3b34;border-radius:6px;background:#c0392b;color:#fff;font-weight:600;cursor:pointer">保存修改（一键写库，自动备份）</button>' +
+      '      <button id="dh-esave" style="display:none;width:100%;margin-top:8px;height:32px;border:1px solid #7a3b34;border-radius:6px;background:#c0392b;color:#fff;font-weight:600;cursor:pointer;font-size:13px">保存修改（一键写库，自动备份）</button>' +
       '    </div>' +
       '  </div>' +
       '</div>';
@@ -845,6 +1023,10 @@
       if (!guid) { toast('没找到条目 guid：请先打开季/目录页，或在目录列表里点"选它"', false); return; }
       if (isNaN(sn) || sn < 0) { toast('季号不合法', false); return; }
       fixEpisodes(guid, sn, box.querySelector('#dh-fixnum'), seq);
+    });
+
+    box.querySelector('#dh-spcheck').addEventListener('click', function() {
+      scanSpecials(box.querySelector('#dh-spcheck'), box.querySelector('#dh-spresult'));
     });
 
     box.querySelector('#dh-go').addEventListener('click', function() {
